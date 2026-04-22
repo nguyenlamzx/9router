@@ -1,12 +1,67 @@
 "use client";
 
-import { useState, useEffect, useCallback } from "react";
+import { useState, useEffect, useMemo } from "react";
 import { Card, Button, Modal, Input, CardSkeleton, ModelSelectModal, Toggle } from "@/shared/components";
 import { useCopyToClipboard } from "@/shared/hooks/useCopyToClipboard";
 import { isOpenAICompatibleProvider, isAnthropicCompatibleProvider } from "@/shared/constants/providers";
 
-// Validate combo name: only a-z, A-Z, 0-9, -, _
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
+const CATEGORY_OPTIONS = ["coding", "writing", "analysis", "translation", "general"];
+const CATEGORY_LABELS = {
+  coding: "Coding",
+  writing: "Writing",
+  analysis: "Analysis",
+  translation: "Translation",
+  general: "General",
+};
+
+function normalizeCategory(value) {
+  if (!value || typeof value !== "string") return "general";
+  const normalized = value.trim().toLowerCase();
+  return CATEGORY_OPTIONS.includes(normalized) ? normalized : "general";
+}
+
+function normalizeTags(tags) {
+  if (!Array.isArray(tags)) return [];
+  return [...new Set(tags.map(tag => String(tag).trim().toLowerCase()).filter(Boolean))].slice(0, 10);
+}
+
+function filterCombos(combos, selectedCategory, query) {
+  return combos.filter((combo) => {
+    const category = normalizeCategory(combo.category);
+    if (selectedCategory !== "all" && category !== selectedCategory) return false;
+
+    if (!query) return true;
+    const q = query.toLowerCase();
+    const tags = normalizeTags(combo.tags);
+    const description = typeof combo.description === "string" ? combo.description.toLowerCase() : "";
+    return combo.name.toLowerCase().includes(q) || tags.some(tag => tag.includes(q)) || description.includes(q);
+  });
+}
+
+function groupByCategory(combos) {
+  return combos.reduce((acc, combo) => {
+    const category = normalizeCategory(combo.category);
+    if (!acc[category]) acc[category] = [];
+    acc[category].push(combo);
+    return acc;
+  }, {});
+}
+
+function categoryClass(category) {
+  switch (category) {
+    case "coding":
+      return "bg-blue-500/10 text-blue-600 dark:text-blue-300";
+    case "writing":
+      return "bg-purple-500/10 text-purple-600 dark:text-purple-300";
+    case "analysis":
+      return "bg-amber-500/10 text-amber-600 dark:text-amber-300";
+    case "translation":
+      return "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300";
+    default:
+      return "bg-black/5 dark:bg-white/10 text-text-muted";
+  }
+}
 
 export default function CombosPage() {
   const [combos, setCombos] = useState([]);
@@ -15,6 +70,8 @@ export default function CombosPage() {
   const [editingCombo, setEditingCombo] = useState(null);
   const [activeProviders, setActiveProviders] = useState([]);
   const [comboStrategies, setComboStrategies] = useState({});
+  const [selectedCategory, setSelectedCategory] = useState("all");
+  const [searchText, setSearchText] = useState("");
   const { copied, copy } = useCopyToClipboard();
 
   useEffect(() => {
@@ -31,11 +88,9 @@ export default function CombosPage() {
       const combosData = await combosRes.json();
       const providersData = await providersRes.json();
       const settingsData = settingsRes.ok ? await settingsRes.json() : {};
-      
+
       if (combosRes.ok) setCombos(combosData.combos || []);
-      if (providersRes.ok) {
-        setActiveProviders(providersData.connections || []);
-      }
+      if (providersRes.ok) setActiveProviders(providersData.connections || []);
       setComboStrategies(settingsData.comboStrategies || {});
     } catch (error) {
       console.log("Error fetching data:", error);
@@ -86,9 +141,7 @@ export default function CombosPage() {
     if (!confirm("Delete this combo?")) return;
     try {
       const res = await fetch(`/api/combos/${id}`, { method: "DELETE" });
-      if (res.ok) {
-        setCombos(combos.filter(c => c.id !== id));
-      }
+      if (res.ok) setCombos(combos.filter(c => c.id !== id));
     } catch (error) {
       console.log("Error deleting combo:", error);
     }
@@ -97,23 +150,30 @@ export default function CombosPage() {
   const handleToggleRoundRobin = async (comboName, enabled) => {
     try {
       const updated = { ...comboStrategies };
-      if (enabled) {
-        updated[comboName] = { fallbackStrategy: "round-robin" };
-      } else {
-        delete updated[comboName];
-      }
-      
+      if (enabled) updated[comboName] = { fallbackStrategy: "round-robin" };
+      else delete updated[comboName];
+
       await fetch("/api/settings", {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ comboStrategies: updated }),
       });
-      
+
       setComboStrategies(updated);
     } catch (error) {
       console.log("Error updating combo strategy:", error);
     }
   };
+
+  const filtered = useMemo(
+    () => filterCombos(combos, selectedCategory, searchText.trim()),
+    [combos, selectedCategory, searchText]
+  );
+  const grouped = useMemo(() => groupByCategory(filtered), [filtered]);
+  const groupKeys = useMemo(
+    () => Object.keys(grouped).sort((a, b) => CATEGORY_OPTIONS.indexOf(a) - CATEGORY_OPTIONS.indexOf(b)),
+    [grouped]
+  );
 
   if (loading) {
     return (
@@ -126,20 +186,41 @@ export default function CombosPage() {
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Header */}
       <div className="flex items-center justify-between">
         <div>
           <h1 className="text-2xl font-semibold">Combos</h1>
-          <p className="text-sm text-text-muted mt-1">
-            Create model combos with fallback support
-          </p>
+          <p className="text-sm text-text-muted mt-1">Create model combos with fallback support</p>
         </div>
-        <Button icon="add" onClick={() => setShowCreateModal(true)}>
-          Create Combo
-        </Button>
+        <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Combo</Button>
       </div>
 
-      {/* Combos List */}
+      {combos.length > 0 && (
+        <Card padding="sm">
+          <div className="flex flex-col gap-3">
+            <div className="flex flex-wrap gap-2">
+              {["all", ...CATEGORY_OPTIONS].map((category) => (
+                <button
+                  key={category}
+                  onClick={() => setSelectedCategory(category)}
+                  className={`px-2.5 py-1 rounded-md text-xs font-medium transition-colors ${
+                    selectedCategory === category
+                      ? "bg-primary text-white"
+                      : "bg-black/5 dark:bg-white/10 text-text-muted hover:text-text-main"
+                  }`}
+                >
+                  {category === "all" ? "All" : CATEGORY_LABELS[category]}
+                </button>
+              ))}
+            </div>
+            <Input
+              value={searchText}
+              onChange={(e) => setSearchText(e.target.value)}
+              placeholder="Search by name, tags, or description"
+            />
+          </div>
+        </Card>
+      )}
+
       {combos.length === 0 ? (
         <Card>
           <div className="text-center py-12">
@@ -148,29 +229,39 @@ export default function CombosPage() {
             </div>
             <p className="text-text-main font-medium mb-1">No combos yet</p>
             <p className="text-sm text-text-muted mb-4">Create model combos with fallback support</p>
-            <Button icon="add" onClick={() => setShowCreateModal(true)}>
-              Create Combo
-            </Button>
+            <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Combo</Button>
           </div>
+        </Card>
+      ) : filtered.length === 0 ? (
+        <Card>
+          <div className="text-center py-10 text-sm text-text-muted">No combos match current filters.</div>
         </Card>
       ) : (
         <div className="flex flex-col gap-4">
-          {combos.map((combo) => (
-            <ComboCard
-              key={combo.id}
-              combo={combo}
-              copied={copied}
-              onCopy={copy}
-              onEdit={() => setEditingCombo(combo)}
-              onDelete={() => handleDelete(combo.id)}
-              roundRobinEnabled={comboStrategies[combo.name]?.fallbackStrategy === "round-robin"}
-              onToggleRoundRobin={(enabled) => handleToggleRoundRobin(combo.name, enabled)}
-            />
+          {groupKeys.map((category) => (
+            <div key={category} className="flex flex-col gap-2">
+              <div className="text-xs uppercase tracking-wide text-text-muted font-semibold">
+                {CATEGORY_LABELS[category] || "General"} ({grouped[category].length})
+              </div>
+              <div className="flex flex-col gap-3">
+                {grouped[category].map((combo) => (
+                  <ComboCard
+                    key={combo.id}
+                    combo={combo}
+                    copied={copied}
+                    onCopy={copy}
+                    onEdit={() => setEditingCombo(combo)}
+                    onDelete={() => handleDelete(combo.id)}
+                    roundRobinEnabled={comboStrategies[combo.name]?.fallbackStrategy === "round-robin"}
+                    onToggleRoundRobin={(enabled) => handleToggleRoundRobin(combo.name, enabled)}
+                  />
+                ))}
+              </div>
+            </div>
           ))}
         </div>
       )}
 
-      {/* Create Modal - Use key to force remount and reset state */}
       <ComboFormModal
         key="create"
         isOpen={showCreateModal}
@@ -179,7 +270,6 @@ export default function CombosPage() {
         activeProviders={activeProviders}
       />
 
-      {/* Edit Modal - Use key to force remount and reset state */}
       <ComboFormModal
         key={editingCombo?.id || "new"}
         isOpen={!!editingCombo}
@@ -193,6 +283,10 @@ export default function CombosPage() {
 }
 
 function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled, onToggleRoundRobin }) {
+  const category = normalizeCategory(combo.category);
+  const tags = normalizeTags(combo.tags);
+  const description = typeof combo.description === "string" ? combo.description : "";
+
   return (
     <Card padding="sm" className="group">
       <div className="flex items-center justify-between">
@@ -202,7 +296,20 @@ function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled,
           </div>
           <div className="min-w-0 flex-1">
             <code className="text-sm font-medium font-mono truncate">{combo.name}</code>
-            <div className="flex items-center gap-1 mt-0.5 flex-wrap">
+            <div className="flex items-center gap-1 mt-1 flex-wrap">
+              <span className={`text-[10px] px-1.5 py-0.5 rounded ${categoryClass(category)}`}>
+                {CATEGORY_LABELS[category] || "General"}
+              </span>
+              {tags.map((tag) => (
+                <span key={tag} className="text-[10px] px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 text-text-muted">
+                  {tag}
+                </span>
+              ))}
+            </div>
+            {description && (
+              <p className="text-[11px] text-text-muted mt-1 truncate">{description}</p>
+            )}
+            <div className="flex items-center gap-1 mt-1.5 flex-wrap">
               {combo.models.length === 0 ? (
                 <span className="text-xs text-text-muted italic">No models</span>
               ) : (
@@ -219,16 +326,10 @@ function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled,
           </div>
         </div>
 
-        {/* Actions */}
         <div className="flex items-center gap-3 shrink-0">
-          {/* Round Robin Toggle — always visible */}
           <div className="flex items-center gap-1.5">
             <span className="text-xs text-text-muted font-medium">Round Robin</span>
-            <Toggle
-              size="sm"
-              checked={roundRobinEnabled}
-              onChange={onToggleRoundRobin}
-            />
+            <Toggle size="sm" checked={roundRobinEnabled} onChange={onToggleRoundRobin} />
           </div>
 
           <div className="flex gap-1">
@@ -237,9 +338,7 @@ function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled,
               className="flex flex-col items-center px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/5 text-text-muted hover:text-primary transition-colors"
               title="Copy combo name"
             >
-              <span className="material-symbols-outlined text-[18px]">
-                {copied === `combo-${combo.id}` ? "check" : "content_copy"}
-              </span>
+              <span className="material-symbols-outlined text-[18px]">{copied === `combo-${combo.id}` ? "check" : "content_copy"}</span>
               <span className="text-[10px] leading-tight">Copy</span>
             </button>
             <button
@@ -265,7 +364,6 @@ function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled,
   );
 }
 
-// Inline editable model item
 function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown, onRemove }) {
   const [editing, setEditing] = useState(false);
   const [draft, setDraft] = useState(model);
@@ -273,21 +371,22 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
   const commit = () => {
     const trimmed = draft.trim();
     if (trimmed && trimmed !== model) onEdit(trimmed);
-    else setDraft(model); // revert if empty or unchanged
+    else setDraft(model);
     setEditing(false);
   };
 
   const handleKeyDown = (e) => {
     if (e.key === "Enter") commit();
-    if (e.key === "Escape") { setDraft(model); setEditing(false); }
+    if (e.key === "Escape") {
+      setDraft(model);
+      setEditing(false);
+    }
   };
 
   return (
     <div className="group flex items-center gap-1.5 px-2 py-1 rounded-md bg-black/[0.02] dark:bg-white/[0.02] hover:bg-black/[0.04] dark:hover:bg-white/[0.04] transition-colors">
-      {/* Index badge */}
       <span className="text-[10px] font-medium text-text-muted w-3 text-center shrink-0">{index + 1}</span>
 
-      {/* Inline editable model value */}
       {editing ? (
         <input
           autoFocus
@@ -307,7 +406,6 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
         </div>
       )}
 
-      {/* Priority arrows */}
       <div className="flex items-center gap-0.5">
         <button
           onClick={onMoveUp}
@@ -327,7 +425,6 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
         </button>
       </div>
 
-      {/* Remove */}
       <button
         onClick={onRemove}
         className="p-0.5 hover:bg-red-500/10 rounded text-text-muted hover:text-red-500 transition-all"
@@ -340,9 +437,12 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
 }
 
 function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
-  // Initialize state with combo values - key prop on parent handles reset on remount
   const [name, setName] = useState(combo?.name || "");
   const [models, setModels] = useState(combo?.models || []);
+  const [category, setCategory] = useState(normalizeCategory(combo?.category));
+  const [description, setDescription] = useState(typeof combo?.description === "string" ? combo.description : "");
+  const [tags, setTags] = useState(normalizeTags(combo?.tags));
+  const [tagInput, setTagInput] = useState("");
   const [showModelSelect, setShowModelSelect] = useState(false);
   const [saving, setSaving] = useState(false);
   const [nameError, setNameError] = useState("");
@@ -384,9 +484,7 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
   };
 
   const handleAddModel = (model) => {
-    if (!models.includes(model.value)) {
-      setModels([...models, model.value]);
-    }
+    if (!models.includes(model.value)) setModels([...models, model.value]);
   };
 
   const handleRemoveModel = (index) => {
@@ -407,10 +505,36 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
     setModels(newModels);
   };
 
+  const commitTags = (value) => {
+    const incoming = value
+      .split(",")
+      .map(tag => tag.trim().toLowerCase())
+      .filter(Boolean);
+    if (incoming.length === 0) return;
+    setTags((prev) => normalizeTags([...prev, ...incoming]));
+    setTagInput("");
+  };
+
+  const handleTagKeyDown = (e) => {
+    if (e.key === "Enter" || e.key === ",") {
+      e.preventDefault();
+      commitTags(tagInput);
+    } else if (e.key === "Backspace" && !tagInput && tags.length > 0) {
+      setTags(tags.slice(0, -1));
+    }
+  };
+
   const handleSave = async () => {
     if (!validateName(name)) return;
+    commitTags(tagInput);
     setSaving(true);
-    await onSave({ name: name.trim(), models });
+    await onSave({
+      name: name.trim(),
+      models,
+      category,
+      tags: normalizeTags([...tags, ...tagInput.split(",")]),
+      description: description.trim(),
+    });
     setSaving(false);
   };
 
@@ -418,13 +542,8 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
 
   return (
     <>
-      <Modal
-        isOpen={isOpen}
-        onClose={onClose}
-        title={isEdit ? "Edit Combo" : "Create Combo"}
-      >
+      <Modal isOpen={isOpen} onClose={onClose} title={isEdit ? "Edit Combo" : "Create Combo"}>
         <div className="flex flex-col gap-3">
-          {/* Name */}
           <div>
             <Input
               label="Combo Name"
@@ -433,12 +552,64 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
               placeholder="my-combo"
               error={nameError}
             />
-            <p className="text-[10px] text-text-muted mt-0.5">
-              Only letters, numbers, -, _ and . allowed
-            </p>
+            <p className="text-[10px] text-text-muted mt-0.5">Only letters, numbers, -, _ and . allowed</p>
           </div>
 
-          {/* Models */}
+          <div>
+            <label className="text-sm font-medium mb-1 block">Category</label>
+            <select
+              value={category}
+              onChange={(e) => setCategory(e.target.value)}
+              className="w-full px-3 py-2 rounded-md border border-black/10 dark:border-white/10 bg-transparent text-sm"
+            >
+              {CATEGORY_OPTIONS.map((option) => (
+                <option key={option} value={option}>
+                  {CATEGORY_LABELS[option]}
+                </option>
+              ))}
+            </select>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-1 block">Tags</label>
+            <div className="border border-black/10 dark:border-white/10 rounded-md px-2 py-2 flex flex-wrap gap-1.5 min-h-10">
+              {tags.map(tag => (
+                <span key={tag} className="text-[11px] px-1.5 py-0.5 rounded bg-black/5 dark:bg-white/10 text-text-muted inline-flex items-center gap-1">
+                  {tag}
+                  <button
+                    type="button"
+                    className="text-[10px] hover:text-red-500"
+                    onClick={() => setTags(tags.filter(t => t !== tag))}
+                  >
+                    ×
+                  </button>
+                </span>
+              ))}
+              {tags.length < 10 && (
+                <input
+                  value={tagInput}
+                  onChange={(e) => setTagInput(e.target.value)}
+                  onKeyDown={handleTagKeyDown}
+                  onBlur={() => commitTags(tagInput)}
+                  className="flex-1 min-w-[120px] bg-transparent text-sm outline-none"
+                  placeholder="Add tags..."
+                />
+              )}
+            </div>
+            <p className="text-[10px] text-text-muted mt-0.5">{tags.length}/10 tags</p>
+          </div>
+
+          <div>
+            <label className="text-sm font-medium mb-1 block">Description</label>
+            <textarea
+              value={description}
+              onChange={(e) => setDescription(e.target.value.slice(0, 200))}
+              className="w-full px-3 py-2 rounded-md border border-black/10 dark:border-white/10 bg-transparent text-sm min-h-[72px]"
+              placeholder="Short description for this combo"
+            />
+            <p className="text-[10px] text-text-muted mt-0.5">{description.length}/200</p>
+          </div>
+
           <div>
             <label className="text-sm font-medium mb-1.5 block">Models</label>
 
@@ -469,7 +640,6 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
               </div>
             )}
 
-            {/* Add Model button */}
             <button
               onClick={() => setShowModelSelect(true)}
               className="w-full mt-2 py-2 border border-dashed border-black/10 dark:border-white/10 rounded-lg text-xs text-primary font-medium hover:text-primary hover:border-primary/50 transition-colors flex items-center justify-center gap-1"
@@ -479,24 +649,15 @@ function ComboFormModal({ isOpen, combo, onClose, onSave, activeProviders }) {
             </button>
           </div>
 
-          {/* Actions */}
           <div className="flex gap-2 pt-1">
-            <Button onClick={onClose} variant="ghost" fullWidth size="sm">
-              Cancel
-            </Button>
-            <Button
-              onClick={handleSave}
-              fullWidth
-              size="sm"
-              disabled={!name.trim() || !!nameError || saving}
-            >
+            <Button onClick={onClose} variant="ghost" fullWidth size="sm">Cancel</Button>
+            <Button onClick={handleSave} fullWidth size="sm" disabled={!name.trim() || !!nameError || saving}>
               {saving ? "Saving..." : isEdit ? "Save" : "Create"}
             </Button>
           </div>
         </div>
       </Modal>
 
-      {/* Model Select Modal */}
       <ModelSelectModal
         isOpen={showModelSelect}
         onClose={() => setShowModelSelect(false)}

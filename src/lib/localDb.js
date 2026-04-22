@@ -103,6 +103,23 @@ function ensureDbShape(data) {
         }
       }
     }
+
+    if (key === "combos" && Array.isArray(next.combos)) {
+      for (const combo of next.combos) {
+        if (combo.category === undefined) {
+          combo.category = null;
+          changed = true;
+        }
+        if (!Array.isArray(combo.tags)) {
+          combo.tags = [];
+          changed = true;
+        }
+        if (typeof combo.description !== "string") {
+          combo.description = "";
+          changed = true;
+        }
+      }
+    }
   }
 
   return { data: next, changed };
@@ -582,6 +599,9 @@ export async function createCombo(data) {
     id: uuidv4(),
     name: data.name,
     models: data.models || [],
+    category: data.category || null,
+    tags: Array.isArray(data.tags) ? data.tags : [],
+    description: typeof data.description === "string" ? data.description.trim() : "",
     createdAt: now,
     updatedAt: now,
   };
@@ -598,9 +618,20 @@ export async function updateCombo(id, data) {
   const index = db.data.combos.findIndex(c => c.id === id);
   if (index === -1) return null;
 
+  const normalized = { ...data };
+  if (Object.hasOwn(normalized, "category")) {
+    normalized.category = normalized.category || null;
+  }
+  if (Object.hasOwn(normalized, "tags")) {
+    normalized.tags = Array.isArray(normalized.tags) ? normalized.tags : [];
+  }
+  if (Object.hasOwn(normalized, "description")) {
+    normalized.description = typeof normalized.description === "string" ? normalized.description.trim() : "";
+  }
+
   db.data.combos[index] = {
     ...db.data.combos[index],
-    ...data,
+    ...normalized,
     updatedAt: new Date().toISOString(),
   };
 

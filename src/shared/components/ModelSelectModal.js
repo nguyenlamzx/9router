@@ -14,8 +14,31 @@ const PROVIDER_ORDER = [
   ...Object.keys(APIKEY_PROVIDERS),
 ];
 
-// Providers that need no auth — always show in model selector
 const NO_AUTH_PROVIDER_IDS = Object.keys(FREE_PROVIDERS).filter(id => FREE_PROVIDERS[id].noAuth);
+
+const CATEGORY_OPTIONS = ["coding", "writing", "analysis", "translation", "general"];
+const CATEGORY_LABELS = {
+  coding: "Coding",
+  writing: "Writing",
+  analysis: "Analysis",
+  translation: "Translation",
+  general: "General",
+};
+
+function normalizeCategory(value) {
+  if (!value || typeof value !== "string") return "general";
+  const normalized = value.trim().toLowerCase();
+  return CATEGORY_OPTIONS.includes(normalized) ? normalized : "general";
+}
+
+function groupCombosByCategory(combos) {
+  return combos.reduce((acc, combo) => {
+    const category = normalizeCategory(combo.category);
+    if (!acc[category]) acc[category] = [];
+    acc[category].push(combo);
+    return acc;
+  }, {});
+}
 
 export default function ModelSelectModal({
   isOpen,
@@ -181,12 +204,31 @@ export default function ModelSelectModal({
     return groups;
   }, [activeProviders, modelAliases, allProviders, providerNodes]);
 
-  // Filter combos by search query
   const filteredCombos = useMemo(() => {
     if (!searchQuery.trim()) return combos;
     const query = searchQuery.toLowerCase();
-    return combos.filter(c => c.name.toLowerCase().includes(query));
+    return combos.filter((combo) => {
+      const tags = Array.isArray(combo.tags) ? combo.tags.map(tag => String(tag).toLowerCase()) : [];
+      const description = typeof combo.description === "string" ? combo.description.toLowerCase() : "";
+      return combo.name.toLowerCase().includes(query) || tags.some(tag => tag.includes(query)) || description.includes(query);
+    });
   }, [combos, searchQuery]);
+
+  const groupedCombos = useMemo(() => {
+    const grouped = groupCombosByCategory(filteredCombos);
+    return Object.keys(grouped)
+      .sort((a, b) => CATEGORY_OPTIONS.indexOf(a) - CATEGORY_OPTIONS.indexOf(b))
+      .map(category => ({
+        category,
+        label: CATEGORY_LABELS[category] || "General",
+        combos: grouped[category],
+      }));
+  }, [filteredCombos]);
+
+  const totalFilteredCombos = useMemo(
+    () => groupedCombos.reduce((sum, group) => sum + group.combos.length, 0),
+    [groupedCombos]
+  );
 
   // Filter models by search query
   const filteredGroups = useMemo(() => {
@@ -251,32 +293,42 @@ export default function ModelSelectModal({
       {/* Models grouped by provider - compact */}
       <div className="max-h-[400px] overflow-y-auto space-y-3">
         {/* Combos section - always first */}
-        {filteredCombos.length > 0 && (
+        {totalFilteredCombos > 0 && (
           <div>
             <div className="flex items-center gap-1.5 mb-1.5 sticky top-0 bg-surface py-0.5">
               <span className="material-symbols-outlined text-primary text-[14px]">layers</span>
               <span className="text-xs font-medium text-primary">Combos</span>
-              <span className="text-[10px] text-text-muted">({filteredCombos.length})</span>
+              <span className="text-[10px] text-text-muted">({totalFilteredCombos})</span>
             </div>
-            <div className="flex flex-wrap gap-1.5">
-              {filteredCombos.map((combo) => {
-                const isSelected = selectedModel === combo.name;
-                return (
-                  <button
-                    key={combo.id}
-                    onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
-                    className={`
-                      px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
-                      ${isSelected
-                        ? "bg-primary text-white border-primary"
-                        : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
-                      }
-                    `}
-                  >
-                    {combo.name}
-                  </button>
-                );
-              })}
+
+            <div className="flex flex-col gap-2">
+              {groupedCombos.map((group) => (
+                <div key={group.category}>
+                  <div className="text-[10px] uppercase tracking-wide text-text-muted mb-1">
+                    {group.label} ({group.combos.length})
+                  </div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {group.combos.map((combo) => {
+                      const isSelected = selectedModel === combo.name;
+                      return (
+                        <button
+                          key={combo.id}
+                          onClick={() => handleSelect({ id: combo.name, name: combo.name, value: combo.name })}
+                          className={`
+                            px-2 py-1 rounded-xl text-xs font-medium transition-all border hover:cursor-pointer
+                            ${isSelected
+                              ? "bg-primary text-white border-primary"
+                              : "bg-surface border-border text-text-main hover:border-primary/50 hover:bg-primary/5"
+                            }
+                          `}
+                        >
+                          {combo.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              ))}
             </div>
           </div>
         )}
@@ -335,7 +387,7 @@ export default function ModelSelectModal({
           </div>
         ))}
 
-        {Object.keys(filteredGroups).length === 0 && filteredCombos.length === 0 && (
+        {Object.keys(filteredGroups).length === 0 && totalFilteredCombos === 0 && (
           <div className="text-center py-4 text-text-muted">
             <span className="material-symbols-outlined text-2xl mb-1 block">
               search_off
