@@ -72,6 +72,8 @@ export default function CombosPage() {
   const [comboStrategies, setComboStrategies] = useState({});
   const [selectedCategory, setSelectedCategory] = useState("all");
   const [searchText, setSearchText] = useState("");
+  const [showSuggestModal, setShowSuggestModal] = useState(false);
+  const [regrouping, setRegrouping] = useState(false);
   const { copied, copy } = useCopyToClipboard();
 
   useEffect(() => {
@@ -165,6 +167,29 @@ export default function CombosPage() {
     }
   };
 
+  const handleRegroup = async () => {
+    if (!confirm("Regroup all combos with auto-scoring?")) return;
+    setRegrouping(true);
+    try {
+      const res = await fetch("/api/combos/regroup", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ dryRun: false }),
+      });
+      if (res.ok) {
+        await fetchData();
+        const result = await res.json();
+        alert(`Regrouped ${result.updated} combos, skipped ${result.skipped}`);
+      } else {
+        alert("Failed to regroup combos");
+      }
+    } catch (error) {
+      console.log("Error regrouping:", error);
+    } finally {
+      setRegrouping(false);
+    }
+  };
+
   const filtered = useMemo(
     () => filterCombos(combos, selectedCategory, searchText.trim()),
     [combos, selectedCategory, searchText]
@@ -191,7 +216,11 @@ export default function CombosPage() {
           <h1 className="text-2xl font-semibold">Combos</h1>
           <p className="text-sm text-text-muted mt-1">Create model combos with fallback support</p>
         </div>
-        <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Combo</Button>
+        <div className="flex items-center gap-2">
+          <Button variant="ghost" icon="auto_awesome" onClick={() => setShowSuggestModal(true)}>Suggest Combos</Button>
+          <Button variant="ghost" icon="sync" onClick={handleRegroup} disabled={regrouping}>{regrouping ? "Regrouping..." : "Regroup"}</Button>
+          <Button icon="add" onClick={() => setShowCreateModal(true)}>Create Combo</Button>
+        </div>
       </div>
 
       {combos.length > 0 && (
@@ -278,14 +307,32 @@ export default function CombosPage() {
         onSave={(data) => handleUpdate(editingCombo.id, data)}
         activeProviders={activeProviders}
       />
+
+      <SuggestModal
+        isOpen={showSuggestModal}
+        onClose={() => setShowSuggestModal(false)}
+        activeProviders={activeProviders}
+        onApply={async () => {
+          await fetchData();
+          setShowSuggestModal(false);
+        }}
+      />
     </div>
   );
 }
+
+const PROFILE_COLORS = {
+  fast: "bg-sky-500/10 text-sky-600 dark:text-sky-300",
+  cheap: "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300",
+  balanced: "bg-violet-500/10 text-violet-600 dark:text-violet-300",
+  reliable: "bg-orange-500/10 text-orange-600 dark:text-orange-300",
+};
 
 function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled, onToggleRoundRobin }) {
   const category = normalizeCategory(combo.category);
   const tags = normalizeTags(combo.tags);
   const description = typeof combo.description === "string" ? combo.description : "";
+  const autoGroupMeta = combo.autoGroupMeta || null;
 
   return (
     <Card padding="sm" className="group">
@@ -305,6 +352,11 @@ function ComboCard({ combo, copied, onCopy, onEdit, onDelete, roundRobinEnabled,
                   {tag}
                 </span>
               ))}
+              {autoGroupMeta?.profile && (
+                <span className={`text-[10px] px-1.5 py-0.5 rounded ${PROFILE_COLORS[autoGroupMeta.profile] || "bg-black/5 dark:bg-white/10 text-text-muted"}`}>
+                  {autoGroupMeta.profile} · {autoGroupMeta.score}
+                </span>
+              )}
             </div>
             {description && (
               <p className="text-[11px] text-text-muted mt-1 truncate">{description}</p>
@@ -433,6 +485,123 @@ function ModelItem({ index, model, isFirst, isLast, onEdit, onMoveUp, onMoveDown
         <span className="material-symbols-outlined text-[12px]">close</span>
       </button>
     </div>
+  );
+}
+
+function SuggestModal({ isOpen, onClose, activeProviders, onApply }) {
+  const [modelAliases, setModelAliases] = useState({});
+  const [showModelSelect, setShowModelSelect] = useState(false);
+  const [candidateModels, setCandidateModels] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  useEffect(() => {
+    if (!isOpen) return;
+    fetch("/api/models/alias")
+      .then((res) => (res.ok ? res.json() : { aliases: {} }))
+      .then((data) => setModelAliases(data.aliases || {}))
+      .catch(() => setModelAliases({}));
+  }, [isOpen]);
+
+  const handleGenerate = async () => {
+    if (candidateModels.length === 0) {
+      alert("Please add candidate models first");
+      return;
+    }
+
+    setLoading(true);
+    try {
+      const res = await fetch("/api/combos/suggestions", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ candidateModels, maxModelsPerSuggestion: 4 }),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || "Failed to generate suggestions");
+      setSuggestions(data.profiles || []);
+    } catch (error) {
+      alert(error.message || "Failed to generate suggestions");
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const handleApply = async (profile) => {
+    const name = prompt(`Combo name for ${profile.profile}:`, `combo-${profile.profile}-${Date.now()}`);
+    if (!name) return;
+
+    const res = await fetch("/api/combos/apply-suggestion", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name, profile: profile.profile, models: profile.models }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json();
+      alert(err.error || "Failed to apply suggestion");
+      return;
+    }
+
+    await onApply();
+  };
+
+  return (
+    <>
+      <Modal isOpen={isOpen} onClose={onClose} title="Suggest Combos">
+        <div className="flex flex-col gap-3">
+          <div>
+            <label className="text-sm font-medium mb-1.5 block">Candidate Models</label>
+            {candidateModels.length === 0 ? (
+              <div className="text-xs text-text-muted border border-dashed border-black/10 dark:border-white/10 rounded-lg px-3 py-3">No candidate models yet</div>
+            ) : (
+              <div className="flex flex-wrap gap-1.5">
+                {candidateModels.map((model) => (
+                  <code key={model} className="text-[10px] font-mono bg-black/5 dark:bg-white/5 px-1.5 py-0.5 rounded text-text-muted">{model}</code>
+                ))}
+              </div>
+            )}
+            <div className="flex gap-2 mt-2">
+              <Button size="sm" variant="ghost" onClick={() => setShowModelSelect(true)}>Add Candidate</Button>
+              <Button size="sm" onClick={handleGenerate} disabled={loading}>{loading ? "Generating..." : "Generate Suggestions"}</Button>
+            </div>
+          </div>
+
+          {suggestions.length > 0 && (
+            <div className="grid grid-cols-1 gap-2 max-h-[360px] overflow-y-auto">
+              {suggestions.map((profile) => (
+                <div key={profile.profile} className="border border-black/10 dark:border-white/10 rounded-lg p-2.5">
+                  <div className="flex items-center justify-between">
+                    <div>
+                      <div className="text-sm font-medium capitalize">{profile.profile}</div>
+                      <div className="text-xs text-text-muted">Score: {profile.score}</div>
+                    </div>
+                    <Button size="sm" onClick={() => handleApply(profile)}>Apply</Button>
+                  </div>
+                  <div className="mt-1.5 flex flex-wrap gap-1">
+                    {(profile.models || []).map((m) => (
+                      <code key={m} className="text-[10px] font-mono bg-black/5 dark:bg-white/5 px-1.5 py-0.5 rounded text-text-muted">{m}</code>
+                    ))}
+                  </div>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </Modal>
+
+      <ModelSelectModal
+        isOpen={showModelSelect}
+        onClose={() => setShowModelSelect(false)}
+        onSelect={(model) => {
+          if (!candidateModels.includes(model.value)) {
+            setCandidateModels([...candidateModels, model.value]);
+          }
+        }}
+        activeProviders={activeProviders}
+        modelAliases={modelAliases}
+        title="Add Candidate Model"
+      />
+    </>
   );
 }
 

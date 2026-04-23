@@ -37,6 +37,11 @@ const DEFAULT_SETTINGS = {
   outboundNoProxy: "",
   mitmRouterBaseUrl: DEFAULT_MITM_ROUTER_BASE,
   rtkEnabled: false,
+  autoGroup: {
+    enabled: true,
+    realtimeOnSave: true,
+    minUsageSamples: 20,
+  },
 };
 
 function cloneDefaultData() {

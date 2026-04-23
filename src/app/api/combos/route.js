@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getCombos, createCombo, getComboByName } from "@/lib/localDb";
+import { getCombos, createCombo, getComboByName, getSettings, updateCombo } from "@/lib/localDb";
+import { scoreCombo } from "@/lib/comboScoring";
 
 export const dynamic = "force-dynamic";
 
@@ -99,7 +100,30 @@ export async function POST(request) {
 
     const combo = await createCombo({ name, models: models || [], ...meta });
 
-    return NextResponse.json(combo, { status: 201 });
+    const settings = await getSettings();
+    const autoGroupEnabled = settings?.autoGroup?.enabled !== false;
+    const realtimeOnSave = settings?.autoGroup?.realtimeOnSave !== false;
+
+    let updatedCombo = combo;
+    const warnings = [];
+
+    if (autoGroupEnabled && realtimeOnSave && Array.isArray(combo.models) && combo.models.length > 0) {
+      try {
+        const metaScore = await scoreCombo(combo.models, { timeout: 1000 });
+        if (metaScore) {
+          updatedCombo = await updateCombo(combo.id, {
+            autoGroupMeta: {
+              ...metaScore,
+              source: "realtime-save",
+            },
+          });
+        }
+      } catch (error) {
+        warnings.push(`Auto-group scoring failed: ${error.message}`);
+      }
+    }
+
+    return NextResponse.json({ ...updatedCombo, warnings }, { status: 201 });
   } catch (error) {
     console.log("Error creating combo:", error);
     return NextResponse.json({ error: "Failed to create combo" }, { status: 500 });

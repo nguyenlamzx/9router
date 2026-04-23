@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
-import { getComboById, updateCombo, deleteCombo, getComboByName } from "@/lib/localDb";
+import { getComboById, updateCombo, deleteCombo, getComboByName, getSettings } from "@/lib/localDb";
+import { scoreCombo } from "@/lib/comboScoring";
 
 const VALID_NAME_REGEX = /^[a-zA-Z0-9_.\-]+$/;
 const VALID_TAG_REGEX = /^[a-zA-Z0-9_-]+$/;
@@ -84,13 +85,35 @@ export async function PUT(request, { params }) {
       return NextResponse.json({ error: meta.error }, { status: 400 });
     }
 
-    const combo = await updateCombo(id, { ...rest, ...meta });
+    let combo = await updateCombo(id, { ...rest, ...meta });
 
     if (!combo) {
       return NextResponse.json({ error: "Combo not found" }, { status: 404 });
     }
 
-    return NextResponse.json(combo);
+    const settings = await getSettings();
+    const autoGroupEnabled = settings?.autoGroup?.enabled !== false;
+    const realtimeOnSave = settings?.autoGroup?.realtimeOnSave !== false;
+
+    const warnings = [];
+
+    if (autoGroupEnabled && realtimeOnSave && Array.isArray(combo.models) && combo.models.length > 0) {
+      try {
+        const metaScore = await scoreCombo(combo.models, { timeout: 1000 });
+        if (metaScore) {
+          combo = await updateCombo(id, {
+            autoGroupMeta: {
+              ...metaScore,
+              source: "realtime-save",
+            },
+          });
+        }
+      } catch (error) {
+        warnings.push(`Auto-group scoring failed: ${error.message}`);
+      }
+    }
+
+    return NextResponse.json({ ...combo, warnings });
   } catch (error) {
     console.log("Error updating combo:", error);
     return NextResponse.json({ error: "Failed to update combo" }, { status: 500 });
